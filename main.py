@@ -5,6 +5,11 @@ from sklearn.metrics.pairwise import cosine_similarity
 import matplotlib.pyplot as plt
 import spacy
 
+import nltk
+nltk.download('wordnet')
+from nltk.corpus import wordnet as wn
+
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -103,6 +108,17 @@ def train_attention_model(dataset, model, epochs=10, batch_size=1, lr=1e-3):
         
         print(f"Epoch {epoch+1}, Loss: {total_loss:.4f}")
     
+def find_pos_tag(word):
+    synsets = wn.synsets(word)
+    possible_tags = set()
+    for syn in synsets:
+        pos = syn.pos()
+        if pos == 's':
+            pos = 'a'
+        possible_tags.add(pos)
+    if not possible_tags:
+        return {'n', 'v', 'a', 'r'}
+    return possible_tags
 
 class NYTConnectionsSolver:
     def __init__(self, words, attention_model=None, device='cpu'):
@@ -140,6 +156,12 @@ class NYTConnectionsSolver:
 
         np.fill_diagonal(sim_matrix, 0) # no self-loops
         self.graph = nx.from_numpy_array(sim_matrix, nodelist=words)
+        for i, word1 in enumerate(words):
+            word1_types = find_pos_tag(word1)
+            for word2 in words[i+1:]:
+                word2_types = find_pos_tag(word2)
+                if word1_types.isdisjoint(word2_types) and self.graph.has_edge(word1, word2):
+                    self.graph.remove_edge(word1, word2)
 
         self.guesses = {}
     
