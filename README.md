@@ -44,10 +44,13 @@ do_EOF(self, arg): -->
 ### Using the Base Word Vectors
 ![untrained model](img/untrained.png)
 #### Graph Visualization
+
 *Start of game*
+
 ![graph](img/graph1.png)
 
 *After solving the first connection*
+
 ![graph2](img/graph2.png)
 
 ### Using the Trained Word Vectors
