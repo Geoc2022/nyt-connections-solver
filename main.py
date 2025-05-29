@@ -1,23 +1,19 @@
-import numpy as np
-import networkx as nx
-from sklearn.cluster import SpectralClustering
-from sklearn.metrics.pairwise import cosine_similarity
+import cmd
+
 import matplotlib.pyplot as plt
-import spacy
-
+import networkx as nx
 import nltk
-nltk.download('wordnet')
-from nltk.corpus import wordnet as wn
-
-
+import numpy as np
+import pandas as pd
+import spacy
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import Dataset
-from torch.utils.data import DataLoader
-import pandas as pd
+from nltk.corpus import wordnet as wn
+from sklearn.cluster import SpectralClustering
+from sklearn.metrics.pairwise import cosine_similarity
+from torch.utils.data import DataLoader, Dataset
 
-import cmd
+nltk.download("wordnet")
 
 class ConnectionsDataset(Dataset):
     def __init__(self, puzzles):
@@ -29,13 +25,20 @@ class ConnectionsDataset(Dataset):
         self.puzzle_labels = []
         for groups in puzzles:
             words = [word for group in groups for word in group]
-            vectors = torch.tensor(np.array([self.nlp(word).vector for word in words]), dtype=torch.float32)
-            labels = torch.tensor(np.array([i for i, group in enumerate(groups) for _ in group]), dtype=torch.long)
+            vectors = torch.tensor(
+                np.array([self.nlp(word).vector for word in words]), dtype=torch.float32
+            )
+            labels = torch.tensor(
+                np.array([i for i, group in enumerate(groups) for _ in group]),
+                dtype=torch.long,
+            )
             self.puzzle_vectors.append(vectors)
             self.puzzle_labels.append(labels)
         self.puzzle_vectors = torch.stack(self.puzzle_vectors)
         self.puzzle_labels = torch.stack(self.puzzle_labels)
-        self.puzzles = [(self.puzzle_vectors[i], self.puzzle_labels[i]) for i in range(len(puzzles))]
+        self.puzzles = [
+            (self.puzzle_vectors[i], self.puzzle_labels[i]) for i in range(len(puzzles))
+        ]
 
     def __len__(self):
         return len(self.puzzles)
@@ -62,14 +65,14 @@ class AttentionModel(nn.Module):
         weights = torch.softmax(scores, dim=-1)
         attended = torch.matmul(weights, V)
         return self.output(attended) + X  # residual connection
-    
+
 
 def group_triplets(embeddings, labels):
     """Generate anchor-positive-negative triplets for training."""
     triplets = []
     n = labels.shape[0]
     for i in range(n):
-        for j in range(i+1, n):
+        for j in range(i + 1, n):
             if labels[i] == labels[j]:  # same group
                 anchor, positive = embeddings[i], embeddings[j]
                 # find a negative example (different group)
@@ -79,17 +82,21 @@ def group_triplets(embeddings, labels):
                         triplets.append((anchor, positive, negative))
     return triplets
 
+
 def compute_triplet_loss(embeddings, labels, margin=0.2):
     loss_fn = nn.TripletMarginLoss(margin=margin)
     triplets = group_triplets(embeddings, labels)
     if not triplets:
         return torch.tensor(0.0, requires_grad=True)
-    
-    loss = torch.stack([
-        loss_fn(a.unsqueeze(0), p.unsqueeze(0), n.unsqueeze(0))
-        for a, p, n in triplets
-    ]).mean()
+
+    loss = torch.stack(
+        [
+            loss_fn(a.unsqueeze(0), p.unsqueeze(0), n.unsqueeze(0))
+            for a, p, n in triplets
+        ]
+    ).mean()
     return loss
+
 
 def train_attention_model(dataset, model, epochs=10, batch_size=1, lr=1e-3):
     dataloader = DataLoader(dataset, batch_size=batch_size, shuffle=True)
@@ -105,28 +112,30 @@ def train_attention_model(dataset, model, epochs=10, batch_size=1, lr=1e-3):
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-        
-        print(f"Epoch {epoch+1}, Loss: {total_loss:.4f}")
-    
+
+        print(f"Epoch {epoch + 1}, Loss: {total_loss:.4f}")
+
+
 def find_pos_tag(word):
     synsets = wn.synsets(word)
     possible_tags = set()
     for syn in synsets:
         pos = syn.pos()
-        if pos == 's':
-            pos = 'a'
+        if pos == "s":
+            pos = "a"
         possible_tags.add(pos)
     if not possible_tags:
-        return {'n', 'v', 'a', 'r'}
+        return {"n", "v", "a", "r"}
     return possible_tags
 
+
 class NYTConnectionsSolver:
-    def __init__(self, words, attention_model=None, device='cpu'):
+    def __init__(self, words, attention_model=None, device="cpu"):
         if len(set(words)) != len(words):
             raise ValueError("Duplicate words are not allowed.")
-        if len(words) != 16: # maybe adjust this to allow for nxn
+        if len(words) != 16:  # maybe adjust this to allow for nxn
             raise ValueError("Expected 16 words for NYT Connections game.")
-        
+
         words = self.preprocess_words(words)
 
         self.words = words
@@ -134,41 +143,41 @@ class NYTConnectionsSolver:
         self.unsolved_words = words
         self.attention_model = attention_model
         self.device = device
-        
+
         self.nlp = spacy.load("en_core_web_lg")
 
         word_vectors_list = [self.nlp(word).vector for word in words]
         if attention_model:
             self.attention_model.to(self.device).eval()
             with torch.no_grad():
-                base_vectors = torch.tensor(np.array(word_vectors_list), dtype=torch.float32).to(self.device)
+                base_vectors = torch.tensor(
+                    np.array(word_vectors_list), dtype=torch.float32
+                ).to(self.device)
                 enhanced_vectors = attention_model(base_vectors).cpu().numpy()
         else:
             enhanced_vectors = np.array(word_vectors_list)
 
-
         self.word_vectors = dict(zip(words, enhanced_vectors))
-        
-        sim_matrix = cosine_similarity(
-            np.array(list(self.word_vectors.values()))
-        )
+
+        sim_matrix = cosine_similarity(np.array(list(self.word_vectors.values())))
         sim_matrix = np.maximum(sim_matrix, 0)
 
-        np.fill_diagonal(sim_matrix, 0) # no self-loops
+        np.fill_diagonal(sim_matrix, 0)  # no self-loops
         self.graph = nx.from_numpy_array(sim_matrix, nodelist=words)
         for i, word1 in enumerate(words):
             word1_types = find_pos_tag(word1)
-            for word2 in words[i+1:]:
+            for word2 in words[i + 1 :]:
                 word2_types = find_pos_tag(word2)
-                if word1_types.isdisjoint(word2_types) and self.graph.has_edge(word1, word2):
+                if word1_types.isdisjoint(word2_types) and self.graph.has_edge(
+                    word1, word2
+                ):
                     self.graph.remove_edge(word1, word2)
 
         self.guesses = {}
-    
+
     def preprocess_words(self, words):
         words = [word.lower() for word in words]
         return words
-
 
     def remove_group(self, group):
         """Mark a group as solved and remove its connections to the rest."""
@@ -178,7 +187,7 @@ class NYTConnectionsSolver:
             print(group, len(group))
             print(self.unsolved_words, len(self.unsolved_words))
             raise ValueError("All words in the group must be unsolved.")
-        
+
         self.solved_groups.append(group)
         for word in group:
             self.unsolved_words.remove(word)
@@ -191,21 +200,19 @@ class NYTConnectionsSolver:
         words = list(self.unsolved_words)
         if len(words) % 4 != 0:
             raise ValueError("Number of unsolved words must be divisible by 4.")
-        
-        sim_matrix = nx.to_numpy_array(self.graph, nodelist=words, weight='weight')
-        
+
+        sim_matrix = nx.to_numpy_array(self.graph, nodelist=words, weight="weight")
+
         n_clusters = len(words) // 4
-        clustering = SpectralClustering(
-            n_clusters=n_clusters, affinity='precomputed'
-        )
+        clustering = SpectralClustering(n_clusters=n_clusters, affinity="precomputed")
         labels = clustering.fit_predict(sim_matrix)
-        
+
         groups = [[] for _ in range(n_clusters)]
         for word, label in zip(words, labels):
             groups[label].append(word)
-        
+
         return groups
-    
+
     def suggest_partition(self):
         """Suggest the best partition of remaining unsolved words into groups of 4."""
         if len(self.unsolved_words) % 4 != 0:
@@ -216,7 +223,7 @@ class NYTConnectionsSolver:
         groups = self.suggest_partition_general()
 
         if all(len(group) == 4 for group in groups):
-            return groups    
+            return groups
 
         oversized = [g for g in groups if len(g) > 4]
         undersized = [g for g in groups if len(g) < 4]
@@ -233,11 +240,14 @@ class NYTConnectionsSolver:
 
                 for word in over:
                     for group in undersized:
-                        sim = np.mean([
-                            self.graph[word][w]['weight']
-                            if self.graph.has_edge(word, w) else 0
-                            for w in group
-                        ])
+                        sim = np.mean(
+                            [
+                                self.graph[word][w]["weight"]
+                                if self.graph.has_edge(word, w)
+                                else 0
+                                for w in group
+                            ]
+                        )
                         if sim > best_score:
                             best_score = sim
                             word_to_move = word
@@ -254,7 +264,6 @@ class NYTConnectionsSolver:
                         oversized.remove(over)
 
         return valid_groups
-    
 
     def input_guess(self, guess, away=0):
         """Takes a guess and how away it was from an answer and update the graph."""
@@ -267,19 +276,22 @@ class NYTConnectionsSolver:
 
         if len(self.unsolved_words) == 4:
             self.remove_group(self.unsolved_words)
-    
+
     def solve_one(self):
         groups = self.suggest_partition()
 
         best_group = None
         best_score = -1
         for group in groups:
-            score = np.mean([
-                self.graph[w1][w2]['weight'] 
-                if i < j and self.graph.has_edge(w1, w2) else 0
-                for i, w1 in enumerate(group)
-                for j, w2 in enumerate(group)
-            ])
+            score = np.mean(
+                [
+                    self.graph[w1][w2]["weight"]
+                    if i < j and self.graph.has_edge(w1, w2)
+                    else 0
+                    for i, w1 in enumerate(group)
+                    for j, w2 in enumerate(group)
+                ]
+            )
             if score > best_score:
                 best_score = score
                 best_group = group
@@ -287,10 +299,10 @@ class NYTConnectionsSolver:
             self.remove_group(best_group)
         else:
             raise ValueError("No valid group found.")
-    
+
     def solve(self):
         """Solve the NYT Connections game."""
-        
+
         while len(self.unsolved_words) > 0:
             self.solve_one()
         return self.solved_groups
@@ -299,72 +311,84 @@ class NYTConnectionsSolver:
         """Visualize the current state of the graph."""
         pos = nx.spring_layout(self.graph)
         groups = self.solved_groups + self.suggest_partition()
-        colors = ['#F9DF6D', '#A0C359', '#B0C4EF', '#B981C7']
+        colors = ["#F9DF6D", "#A0C359", "#B0C4EF", "#B981C7"]
         for i, group in enumerate(groups):
             color = colors[i % len(colors)]
             # nx.draw_networkx_nodes(self.graph, pos, nodelist=group, node_color=color)
-            nx.draw(self.graph, pos, nodelist=group, with_labels=True, node_size=200, node_color=color, edge_color='#efefe7')
+            nx.draw(
+                self.graph,
+                pos,
+                nodelist=group,
+                with_labels=True,
+                node_size=200,
+                node_color=color,
+                edge_color="#efefe7",
+            )
         plt.show()
-
 
     def print_board(self):
         """Print the current state of the board, enclosed in a box."""
+
         def color_word(word, color):
             color_code = 0
-            if color == 'yellow':
+            if color == "yellow":
                 color_code = 33
-            elif color == 'green':
+            elif color == "green":
                 color_code = 32
-            elif color == 'blue':
+            elif color == "blue":
                 color_code = 34
-            elif color == 'purple':
+            elif color == "purple":
                 color_code = 35
             else:
                 color_code = 37
             return f"\033[{color_code}m{word}\033[0m"
-        
-        color_list = ['yellow', 'green', 'blue', 'purple']
-        
+
+        color_list = ["yellow", "green", "blue", "purple"]
+
         all_groups = self.solved_groups + self.suggest_partition()
-        
+
         max_lengths = [0, 0, 0, 0]  # assumes 4 words per group
         for group in all_groups:
             for i, word in enumerate(group):
                 max_lengths[i] = max(max_lengths[i], len(word.upper()))
-        
+
         formatted_lines = []
-        
+
         for i, group in enumerate(all_groups):
             padded_words = []
             for j, word in enumerate(group):
                 padded_word = word.upper().ljust(max_lengths[j])
                 padded_words.append(padded_word)
-                
+
             group_text = "    ".join(padded_words)
-            
+
             if i < len(self.solved_groups):
                 color = color_list[i % len(color_list)]
             else:
-                color = 'white'
-                
+                color = "white"
+
             formatted_lines.append((group_text, color))
-        
-        max_line_length = max(len(line) for line, _ in formatted_lines) if formatted_lines else 0
-        box_width = max_line_length + 4 # 2 for padding, 2 for box edges
-        
-        print("┌" + "─" * (box_width - 2) + "┐") # top
-        
+
+        max_line_length = (
+            max(len(line) for line, _ in formatted_lines) if formatted_lines else 0
+        )
+        box_width = max_line_length + 4  # 2 for padding, 2 for box edges
+
+        print("┌" + "─" * (box_width - 2) + "┐")  # top
+
         for line_text, color in formatted_lines:
             padding = " " * (box_width - 3 - len(line_text))
-            
+
             # Print the line with color and proper padding
             print("│ " + color_word(line_text, color) + padding + "│")
-        
-        print("└" + "─" * (box_width - 2) + "┘") # bottom
+
+        print("└" + "─" * (box_width - 2) + "┘")  # bottom
 
 
 class ConnectionsRepl(cmd.Cmd):
-    intro = "Welcome to the NYT Connections Solver REPL. Type help or ? to list commands.\n"
+    intro = (
+        "Welcome to the NYT Connections Solver REPL. Type help or ? to list commands.\n"
+    )
     prompt = "(connections) "
 
     def __init__(self):
@@ -372,14 +396,42 @@ class ConnectionsRepl(cmd.Cmd):
         self.solver = None
         self.model = None
         self.games = [
-            ["apple", "banana", "orange", "grape",
-                "blue", "red", "green", "yellow",
-                "car", "train", "plane", "bike",
-                "dog", "cat", "mouse", "rabbit"],
-            ["LEDGER", "DAY", "BROWN", "HORSE",
-                "WATER", "HARDY", "LOG", "MURPHY",
-                "BALE", "DREW", "CANOPY", "RECORD",
-                "TROUGH", "REGISTER", "HOLMES", "PITCHFORK"]
+            [
+                "apple",
+                "banana",
+                "orange",
+                "grape",
+                "blue",
+                "red",
+                "green",
+                "yellow",
+                "car",
+                "train",
+                "plane",
+                "bike",
+                "dog",
+                "cat",
+                "mouse",
+                "rabbit",
+            ],
+            [
+                "LEDGER",
+                "DAY",
+                "BROWN",
+                "HORSE",
+                "WATER",
+                "HARDY",
+                "LOG",
+                "MURPHY",
+                "BALE",
+                "DREW",
+                "CANOPY",
+                "RECORD",
+                "TROUGH",
+                "REGISTER",
+                "HOLMES",
+                "PITCHFORK",
+            ],
         ]
 
     def do_load_sample(self, arg):
@@ -491,9 +543,11 @@ class ConnectionsRepl(cmd.Cmd):
                     words = group["Word"].tolist()
                     groups.append(words)
                 puzzles.append(groups)
-            train_dataset = ConnectionsDataset(puzzles[:int(len(puzzles) * .5)])
+            train_dataset = ConnectionsDataset(puzzles[: int(len(puzzles) * 0.5)])
             self.model = AttentionModel(train_dataset.vector_dim, 128)
-            train_attention_model(train_dataset, self.model, epochs=7, batch_size=1, lr=1e-3)
+            train_attention_model(
+                train_dataset, self.model, epochs=7, batch_size=1, lr=1e-3
+            )
             print("Model trained.")
         except Exception as e:
             print("Error:", e)
@@ -511,20 +565,37 @@ class ConnectionsRepl(cmd.Cmd):
         print()
         return self.do_exit(arg)
 
+
 def repl():
     ConnectionsRepl().mdloop()
 
+
 def main():
     # Example usage
-    words = ["apple", "banana", "orange", "grape",
-             "blue", "red", "green", "yellow",
-             "car", "train", "plane", "bike",
-             "dog", "cat", "mouse", "rabbit"]
-    
+    words = [
+        "apple",
+        "banana",
+        "orange",
+        "grape",
+        "blue",
+        "red",
+        "green",
+        "yellow",
+        "car",
+        "train",
+        "plane",
+        "bike",
+        "dog",
+        "cat",
+        "mouse",
+        "rabbit",
+    ]
+
     solver = NYTConnectionsSolver(words)
     solver.print_board()
     solver.solve()
     solver.print_board()
+
 
 if __name__ == "__main__":
     # main()
